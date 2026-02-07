@@ -418,17 +418,20 @@ def main():
     selected_reddit = []
     selected_reddit_urls = set()
     lux_sub = "Luxembourg"
-    lux_posts_primary = [x for x in reddit_all if x.get("subreddit") == lux_sub and x["in_window"] and not x["is_seen"]]
-    lux_posts_fallback_1 = [x for x in reddit_all if x.get("subreddit") == lux_sub and x["in_window"]]
-    lux_posts_fallback_2 = [x for x in reddit_all if x.get("subreddit") == lux_sub and not x["is_seen"]]
-    lux_posts_fallback_3 = [x for x in reddit_all if x.get("subreddit") == lux_sub]
+    lux_posts_primary = [
+        x for x in reddit_all
+        if x.get("subreddit") == lux_sub and not x["is_seen"] and x.get("comments", 0) >= 10
+    ]
+    lux_posts_fallback = [
+        x for x in reddit_all
+        if x.get("subreddit") == lux_sub and x.get("comments", 0) >= 10
+    ]
     log(
-        "[debug] reddit lux pools sizes: "
-        f"primary={len(lux_posts_primary)} fallback1={len(lux_posts_fallback_1)} "
-        f"fallback2={len(lux_posts_fallback_2)} fallback3={len(lux_posts_fallback_3)}"
+        "[debug] reddit lux pools sizes (>=10 comments, no time window): "
+        f"primary={len(lux_posts_primary)} fallback={len(lux_posts_fallback)}"
     )
-    for pool in [lux_posts_primary, lux_posts_fallback_1, lux_posts_fallback_2, lux_posts_fallback_3]:
-        pool.sort(key=lambda x: (x["popularity"], x["published_ts"]), reverse=True)
+    for pool in [lux_posts_primary, lux_posts_fallback]:
+        pool.sort(key=lambda x: x["published_ts"], reverse=True)
         pick = pick_first(pool, selected_reddit_urls)
         if pick:
             selected_reddit.append(pick)
