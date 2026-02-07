@@ -331,7 +331,6 @@ def format_message(top5):
             lines.append(
                 f"{i}) [Reddit r/{it['subreddit']}] {it['title']}"
             )
-            lines.append(f"   Heat: {it['score']} upvotes + {it['comments']} comments = {it['popularity']}")
         else:
             lines.append(f"{i}) [{it['source']}] {it['title']}")
         if it["summary"]:
