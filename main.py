@@ -247,12 +247,12 @@ def format_message(top5):
             lines.append(
                 f"{i}) [Reddit r/{it['subreddit']}] {it['title']}"
             )
-            lines.append(f"   熱度：{it['score']} 讚 + {it['comments']} 留言 = {it['popularity']}")
+            lines.append(f"   Heat: {it['score']} upvotes + {it['comments']} comments = {it['popularity']}")
         else:
             lines.append(f"{i}) [{it['source']}] {it['title']}")
         if it["summary"]:
-            lines.append(f"   摘要：{it['summary']}")
-        lines.append(f"   連結：{it['url']}\n")
+            lines.append(f"   Summary: {it['summary']}")
+        lines.append(f"   Link: {it['url']}\n")
     msg = "\n".join(lines)
     return msg[:MAX_MESSAGE_LEN]
 
@@ -380,7 +380,7 @@ def main():
 
     selected = selected_reddit[:FIXED_REDDIT_COUNT] + selected_news[:OTHER_NEWS_COUNT]
     if not selected:
-        tg_send("🛰️ 這一輪沒有抓到新的重要消息（或都已推播過）。")
+        tg_send("No important new items were found this round (or all were already sent).")
         return
 
     for it in selected:
