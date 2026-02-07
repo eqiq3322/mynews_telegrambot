@@ -88,6 +88,65 @@ Reddit ranking key:
 - `TG_CHAT_ID` (required)
 - `GUARDIAN_API_KEY` (optional)
 
+## Prerequisites outside this repo
+
+Before running this project, you must complete the following external setup:
+
+1. Create a Telegram bot.
+- Open Telegram and message `@BotFather`.
+- Create a bot and get the bot token (`TG_BOT_TOKEN`).
+
+2. Get your target chat ID.
+- Add your bot to your chat/group/channel.
+- Send at least one message in that chat.
+- Get the chat ID and set it as `TG_CHAT_ID`.
+
+3. (Optional) Get a Guardian API key.
+- Register at the Guardian Open Platform.
+- Create an API key and set `GUARDIAN_API_KEY`.
+- If omitted, Guardian source is skipped.
+
+4. Configure GitHub Actions secrets (if using workflow).
+- Add `TG_BOT_TOKEN`, `TG_CHAT_ID`, and optionally `GUARDIAN_API_KEY`
+- Go to repository settings: `Settings -> Secrets and variables -> Actions`.
+
+## Customization options
+
+You can customize behavior directly in `main.py`:
+
+- Source list:
+- `RSS_SOURCES` for news websites
+- `REDDIT_SUBREDDITS` for Reddit boards
+
+- Keyword filtering:
+- `TOPIC_KEYWORDS` to define topic categories and matching keywords
+- `Lux_immigration` is treated as priority topic in current logic
+
+- Time windows:
+- `LOOKBACK_HOURS_NEWS` for news-site recency
+- `LOOKBACK_HOURS_REDDIT` for Reddit recency
+
+- Output mix and size:
+- `TOTAL_PUSH_COUNT`, `FIXED_REDDIT_COUNT`, `OTHER_NEWS_COUNT`
+
+- Ranking rules:
+- News: keyword-hit count in title
+- Reddit: `score + num_comments`
+
+## Free vs paid APIs
+
+- Current default setup is based on free/public endpoints:
+- RSS feeds
+- Reddit public JSON endpoints
+- Guardian API key (free tier available)
+
+- If you are willing to pay, you can extend this project with premium sources, for example:
+- paid news APIs with richer metadata
+- enterprise social listening APIs
+- paid LLM-based relevance/ranking layers
+
+The code is intentionally simple so you can replace fetch and ranking modules with paid integrations.
+
 ## Run
 
 ```powershell
