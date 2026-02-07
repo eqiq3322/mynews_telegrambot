@@ -36,6 +36,11 @@ Each run targets up to 5 items:
 - If any title matches `Lux_immigration` keywords, 1 slot is forced to that topic first.
 - Remaining slots are filled by highest keyword-hit count in title.
 
+Fallback behavior to keep quota stable:
+- If Reddit/new items in 6 hours are insufficient, bot relaxes constraints in this order:
+- allow previously seen items, then allow older items.
+- Goal is to keep 2 Reddit + 3 news whenever possible.
+
 ## Daily subreddit diversity rule
 
 - Bot tracks pushed subreddit usage per UTC+8 day in table `subreddit_daily`.

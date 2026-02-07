@@ -228,6 +228,14 @@ def mark_subreddit_used(conn, day_key: str, subreddit: str):
     conn.commit()
 
 
+def pick_first(candidates, used_urls):
+    for it in candidates:
+        if it["url"] not in used_urls:
+            used_urls.add(it["url"])
+            return it
+    return None
+
+
 def format_message(top5):
     lines = []
     utc_plus_8 = timezone(timedelta(hours=8))
@@ -264,65 +272,108 @@ def main():
     reddit_items = fetch_reddit_hot()
 
     cutoff = time.time() - LOOKBACK_HOURS * 3600
-    fresh_news = []
+    news_all_kw = []
+    news_primary = []
     for it in news_items:
-        if it["published_ts"] < cutoff:
-            continue
         title_norm = norm_text(it["title"])
-        if already_seen(conn, it["url"], title_norm):
-            continue
         it["title_norm"] = title_norm
         it["topic_hits"] = topic_hits_in_title(it["title"])
         if it["topic_hits"] <= 0:
             continue
         it["lux_hit"] = lux_immigration_hit(it["title"])
-        fresh_news.append(it)
+        it["is_seen"] = already_seen(conn, it["url"], title_norm)
+        it["in_window"] = it["published_ts"] >= cutoff
+        news_all_kw.append(it)
+        if it["in_window"] and not it["is_seen"]:
+            news_primary.append(it)
 
-    fresh_reddit = []
+    reddit_all = []
     for it in reddit_items:
-        if it["published_ts"] < cutoff:
-            continue
         title_norm = norm_text(it["title"])
-        if already_seen(conn, it["url"], title_norm):
-            continue
         it["title_norm"] = title_norm
-        fresh_reddit.append(it)
+        it["is_seen"] = already_seen(conn, it["url"], title_norm)
+        it["in_window"] = it["published_ts"] >= cutoff
+        reddit_all.append(it)
 
     selected_news = []
-    lux_news = [x for x in fresh_news if x["lux_hit"]]
+    selected_news_urls = set()
+    lux_news = [x for x in news_primary if x["lux_hit"]]
     lux_news.sort(key=lambda x: (x["topic_hits"], x["published_ts"]), reverse=True)
     if lux_news:
-        selected_news.append(lux_news[0])
+        first = pick_first(lux_news, selected_news_urls)
+        if first:
+            selected_news.append(first)
+    else:
+        lux_news_fallback = [x for x in news_all_kw if x["lux_hit"]]
+        lux_news_fallback.sort(key=lambda x: (x["topic_hits"], x["published_ts"]), reverse=True)
+        first = pick_first(lux_news_fallback, selected_news_urls)
+        if first:
+            selected_news.append(first)
 
-    selected_urls = {x["url"] for x in selected_news}
-    remaining_news = [x for x in fresh_news if x["url"] not in selected_urls]
-    remaining_news.sort(key=lambda x: (x["topic_hits"], x["published_ts"]), reverse=True)
-    selected_news.extend(remaining_news[: max(0, OTHER_NEWS_COUNT - len(selected_news))])
+    remaining_news_primary = [x for x in news_primary if x["url"] not in selected_news_urls]
+    remaining_news_primary.sort(key=lambda x: (x["topic_hits"], x["published_ts"]), reverse=True)
+    for it in remaining_news_primary:
+        if len(selected_news) >= OTHER_NEWS_COUNT:
+            break
+        pick = pick_first([it], selected_news_urls)
+        if pick:
+            selected_news.append(pick)
+
+    if len(selected_news) < OTHER_NEWS_COUNT:
+        remaining_news_fallback = [x for x in news_all_kw if x["url"] not in selected_news_urls]
+        remaining_news_fallback.sort(key=lambda x: (x["topic_hits"], x["published_ts"]), reverse=True)
+        for it in remaining_news_fallback:
+            if len(selected_news) >= OTHER_NEWS_COUNT:
+                break
+            pick = pick_first([it], selected_news_urls)
+            if pick:
+                selected_news.append(pick)
 
     selected_reddit = []
+    selected_reddit_urls = set()
     lux_sub = "Luxembourg"
-    lux_posts = [x for x in fresh_reddit if x.get("subreddit") == lux_sub]
-    lux_posts.sort(key=lambda x: (x["popularity"], x["published_ts"]), reverse=True)
-    if lux_posts:
-        selected_reddit.append(lux_posts[0])
-
-    non_lux_posts = [x for x in fresh_reddit if x.get("subreddit") != lux_sub]
-    non_lux_posts.sort(key=lambda x: (x["popularity"], x["published_ts"]), reverse=True)
+    lux_posts_primary = [x for x in reddit_all if x.get("subreddit") == lux_sub and x["in_window"] and not x["is_seen"]]
+    lux_posts_fallback_1 = [x for x in reddit_all if x.get("subreddit") == lux_sub and x["in_window"]]
+    lux_posts_fallback_2 = [x for x in reddit_all if x.get("subreddit") == lux_sub and not x["is_seen"]]
+    lux_posts_fallback_3 = [x for x in reddit_all if x.get("subreddit") == lux_sub]
+    for pool in [lux_posts_primary, lux_posts_fallback_1, lux_posts_fallback_2, lux_posts_fallback_3]:
+        pool.sort(key=lambda x: (x["popularity"], x["published_ts"]), reverse=True)
+        pick = pick_first(pool, selected_reddit_urls)
+        if pick:
+            selected_reddit.append(pick)
+            break
 
     day_key = utc8_day_key()
     used_today = get_used_subreddits_today(conn, day_key)
     planned_today = {x["subreddit"] for x in selected_reddit}
 
     second_pick = None
-    if non_lux_posts:
-        if len(used_today.union(planned_today)) < 3:
-            for cand in non_lux_posts:
+    non_lux_primary = [x for x in reddit_all if x.get("subreddit") != lux_sub and x["in_window"] and not x["is_seen"]]
+    non_lux_fallback_1 = [x for x in reddit_all if x.get("subreddit") != lux_sub and x["in_window"]]
+    non_lux_fallback_2 = [x for x in reddit_all if x.get("subreddit") != lux_sub and not x["is_seen"]]
+    non_lux_fallback_3 = [x for x in reddit_all if x.get("subreddit") != lux_sub]
+    pools = [non_lux_primary, non_lux_fallback_1, non_lux_fallback_2, non_lux_fallback_3]
+    for pool in pools:
+        pool.sort(key=lambda x: (x["popularity"], x["published_ts"]), reverse=True)
+
+    if len(used_today.union(planned_today)) < 3:
+        for pool in pools:
+            for cand in pool:
+                if cand["url"] in selected_reddit_urls:
+                    continue
                 if cand["subreddit"] not in used_today.union(planned_today):
                     second_pick = cand
                     break
-        if second_pick is None:
-            second_pick = non_lux_posts[0]
+            if second_pick is not None:
+                break
+
+    if second_pick is None:
+        for pool in pools:
+            second_pick = pick_first(pool, selected_reddit_urls)
+            if second_pick is not None:
+                break
     if second_pick:
+        selected_reddit_urls.add(second_pick["url"])
         selected_reddit.append(second_pick)
 
     selected = selected_reddit[:FIXED_REDDIT_COUNT] + selected_news[:OTHER_NEWS_COUNT]
