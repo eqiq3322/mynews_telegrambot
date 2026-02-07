@@ -30,6 +30,8 @@ REDDIT_SUBREDDITS = [
     "dataisbeautiful",
 ]
 
+EU_SUBREDDITS = {"europe", "EuropeanUnion", "Luxembourg"}
+
 TOPIC_KEYWORDS = {
     "EU_big": ["eu", "european commission", "ukraine", "russia"],
     "Lux_immigration": ["luxembourg", "residence", "visa", "blue card", "schengen", "immigration"],
@@ -417,37 +419,27 @@ def main():
 
     selected_reddit = []
     selected_reddit_urls = set()
-    lux_sub = "Luxembourg"
-    lux_posts_primary = [
+    eu_posts_primary = [
         x for x in reddit_all
-        if x.get("subreddit") == lux_sub and not x["is_seen"] and x.get("comments", 0) >= 10
+        if x.get("subreddit") in EU_SUBREDDITS and x["in_window"] and not x["is_seen"]
     ]
-    lux_posts_fallback = [
-        x for x in reddit_all
-        if x.get("subreddit") == lux_sub and x.get("comments", 0) >= 10
-    ]
-    log(
-        "[debug] reddit lux pools sizes (>=10 comments, no time window): "
-        f"primary={len(lux_posts_primary)} fallback={len(lux_posts_fallback)}"
-    )
-    for pool in [lux_posts_primary, lux_posts_fallback]:
-        pool.sort(key=lambda x: x["published_ts"], reverse=True)
-        pick = pick_first(pool, selected_reddit_urls)
-        if pick:
-            selected_reddit.append(pick)
-            break
+    log(f"[debug] reddit EU pool size (48h, not seen)={len(eu_posts_primary)}")
+    eu_posts_primary.sort(key=lambda x: (x["popularity"], x["published_ts"]), reverse=True)
+    pick = pick_first(eu_posts_primary, selected_reddit_urls)
+    if pick:
+        selected_reddit.append(pick)
 
     day_key = utc8_day_key()
     used_today = get_used_subreddits_today(conn, day_key)
     planned_today = {x["subreddit"] for x in selected_reddit}
 
     second_pick = None
-    non_lux_primary = [x for x in reddit_all if x.get("subreddit") != lux_sub and x["in_window"] and not x["is_seen"]]
-    non_lux_fallback_1 = [x for x in reddit_all if x.get("subreddit") != lux_sub and x["in_window"]]
-    non_lux_fallback_2 = [x for x in reddit_all if x.get("subreddit") != lux_sub and not x["is_seen"]]
-    non_lux_fallback_3 = [x for x in reddit_all if x.get("subreddit") != lux_sub]
+    non_lux_primary = [x for x in reddit_all if x.get("subreddit") not in EU_SUBREDDITS and x["in_window"] and not x["is_seen"]]
+    non_lux_fallback_1 = [x for x in reddit_all if x.get("subreddit") not in EU_SUBREDDITS and x["in_window"]]
+    non_lux_fallback_2 = [x for x in reddit_all if x.get("subreddit") not in EU_SUBREDDITS and not x["is_seen"]]
+    non_lux_fallback_3 = [x for x in reddit_all if x.get("subreddit") not in EU_SUBREDDITS]
     log(
-        "[debug] reddit non-lux pools sizes: "
+        "[debug] reddit non-EU pools sizes: "
         f"primary={len(non_lux_primary)} fallback1={len(non_lux_fallback_1)} "
         f"fallback2={len(non_lux_fallback_2)} fallback3={len(non_lux_fallback_3)}"
     )
