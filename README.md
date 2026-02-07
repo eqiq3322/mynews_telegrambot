@@ -22,22 +22,23 @@ Reddit is fetched from each board's hot feed: `https://www.reddit.com/r/<sub>/ho
 
 ## Time window
 
-- Lookback window is last `6` hours (`LOOKBACK_HOURS = 6`).
+- News sites lookback: last `6` hours.
+- Reddit lookback: last `48` hours.
 
 ## Push composition per run
 
-Each run targets up to 5 items:
+Each run targets up to 5 items.
 
-1. 2 Reddit items (fixed):
-- 1 from `r/Luxembourg`: the hottest post in time window by `score + num_comments`.
-- 1 from the other listed subreddits: hottest post by `score + num_comments`.
+1. 2 Reddit items (fixed).
+- 1 from `r/Luxembourg`: hottest in window by `score + num_comments`.
+- 1 from the other listed subreddits: hottest by `score + num_comments`.
 
-2. 3 news-site items:
-- If any title matches `Lux_immigration` keywords, 1 slot is forced to that topic first.
+2. 3 news-site items.
+- If any title matches `Lux_immigration`, 1 slot is forced to this topic first.
 - Remaining slots are filled by highest keyword-hit count in title.
 
 Fallback behavior to keep quota stable:
-- If Reddit/new items in 6 hours are insufficient, bot relaxes constraints in this order:
+- If candidates are insufficient under primary windows (Reddit 48h, news 6h), bot relaxes constraints in this order:
 - allow previously seen items, then allow older items.
 - Goal is to keep 2 Reddit + 3 news whenever possible.
 
@@ -48,10 +49,9 @@ Fallback behavior to keep quota stable:
 
 ## Scoring and filtering
 
-There is no source weight anymore.
-There is no policy keyword list anymore.
-
-Only title keywords are used (`TOPIC_KEYWORDS`):
+There is no source weight.
+There is no policy keyword list.
+Only title keywords are used (`TOPIC_KEYWORDS`).
 
 - `EU_big`: `eu`, `european commission`, `ukraine`, `russia`
 - `Lux_immigration`: `luxembourg`, `residence`, `visa`, `blue card`, `schengen`, `immigration`
@@ -80,7 +80,7 @@ Reddit ranking key:
 - Header time uses `UTC+8` and 24-hour format:
 - `news feed for Laura at HH:MM`
 - Reddit item includes popularity detail:
-- `熱度：<score> 讚 + <comments> 留言 = <popularity>`
+- `heat: <score> upvotes + <comments> comments = <popularity>`
 
 ## Environment variables
 

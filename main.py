@@ -39,7 +39,8 @@ TOPIC_KEYWORDS = {
 }
 
 DB_PATH = "seen.sqlite"
-LOOKBACK_HOURS = 6
+LOOKBACK_HOURS_NEWS = 6
+LOOKBACK_HOURS_REDDIT = 48
 MAX_MESSAGE_LEN = 3900
 TOTAL_PUSH_COUNT = 5
 FIXED_REDDIT_COUNT = 2
@@ -271,7 +272,8 @@ def main():
     news_items.extend(fetch_guardian())
     reddit_items = fetch_reddit_hot()
 
-    cutoff = time.time() - LOOKBACK_HOURS * 3600
+    news_cutoff = time.time() - LOOKBACK_HOURS_NEWS * 3600
+    reddit_cutoff = time.time() - LOOKBACK_HOURS_REDDIT * 3600
     news_all_kw = []
     news_primary = []
     for it in news_items:
@@ -282,7 +284,7 @@ def main():
             continue
         it["lux_hit"] = lux_immigration_hit(it["title"])
         it["is_seen"] = already_seen(conn, it["url"], title_norm)
-        it["in_window"] = it["published_ts"] >= cutoff
+        it["in_window"] = it["published_ts"] >= news_cutoff
         news_all_kw.append(it)
         if it["in_window"] and not it["is_seen"]:
             news_primary.append(it)
@@ -292,7 +294,7 @@ def main():
         title_norm = norm_text(it["title"])
         it["title_norm"] = title_norm
         it["is_seen"] = already_seen(conn, it["url"], title_norm)
-        it["in_window"] = it["published_ts"] >= cutoff
+        it["in_window"] = it["published_ts"] >= reddit_cutoff
         reddit_all.append(it)
 
     selected_news = []
