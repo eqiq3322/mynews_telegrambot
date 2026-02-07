@@ -178,8 +178,8 @@ def fetch_guardian():
 
 def format_message(top5):
     lines = []
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    lines.append(f"🛰️ 每 3 小時精選（{now}）\n")
+    local_time = datetime.now().strftime("%I:%M %p")
+    lines.append(f"news feed for Laura at {local_time}\\n")
     for i, it in enumerate(top5, 1):
         lines.append(f"{i}) [{it['source']}] {it['title']}")
         if it["summary"]:
@@ -232,3 +232,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
