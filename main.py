@@ -10,6 +10,7 @@ import feedparser
 BOT_TOKEN = os.environ.get("TG_BOT_TOKEN")
 CHAT_ID = os.environ.get("TG_CHAT_ID")
 GUARDIAN_API_KEY = os.environ.get("GUARDIAN_API_KEY")
+DEBUG = os.environ.get("DEBUG") == "1"
 
 if not BOT_TOKEN or not CHAT_ID:
     raise SystemExit("Missing TG_BOT_TOKEN or TG_CHAT_ID in environment.")
@@ -58,6 +59,11 @@ def init_db():
     return conn
 
 
+def log(msg: str):
+    if DEBUG:
+        print(msg)
+
+
 def already_seen(conn, url: str, title_norm: str) -> bool:
     cur = conn.execute("SELECT 1 FROM seen WHERE url=?", (url,))
     if cur.fetchone() is not None:
@@ -79,6 +85,14 @@ def norm_text(s: str) -> str:
     return s
 
 
+def kw_in_text(text: str, kw: str) -> bool:
+    if " " in kw:
+        return kw in text
+    if kw.isalpha() and len(kw) <= 3:
+        return re.search(rf"\\b{re.escape(kw)}\\b", text) is not None
+    return kw in text
+
+
 def strip_html(s: str) -> str:
     return re.sub(r"<.*?>", "", s or "").strip()
 
@@ -88,15 +102,30 @@ def topic_hits_in_title(title: str) -> int:
     hits = 0
     for kws in TOPIC_KEYWORDS.values():
         for kw in kws:
-            if kw in text:
+            if kw_in_text(text, kw):
                 hits += 1
     return hits
+
+
+def topic_label(title: str):
+    text = norm_text(title)
+    best_topic = None
+    best_hits = 0
+    for topic, kws in TOPIC_KEYWORDS.items():
+        hits = 0
+        for kw in kws:
+            if kw_in_text(text, kw):
+                hits += 1
+        if hits > best_hits:
+            best_hits = hits
+            best_topic = topic
+    return best_topic, best_hits
 
 
 def lux_immigration_hit(title: str) -> bool:
     text = norm_text(title)
     for kw in TOPIC_KEYWORDS["Lux_immigration"]:
-        if kw in text:
+        if kw_in_text(text, kw):
             return True
     return False
 
@@ -120,6 +149,7 @@ def fetch_rss():
     headers = {"User-Agent": "Mozilla/5.0 (news-bot; +https://example.com)"}
     for name, url in RSS_SOURCES:
         d = feedparser.parse(url, request_headers=headers)
+        log(f"[debug] RSS {name}: entries={len(d.entries)}")
         for e in d.entries[:50]:
             link = e.get("link")
             if not link:
@@ -147,6 +177,7 @@ def parse_guardian_time(s: str) -> int:
 
 def fetch_guardian():
     if not GUARDIAN_API_KEY:
+        log("[debug] Guardian: missing API key")
         return []
     url = "https://content.guardianapis.com/search"
     params = {
@@ -163,6 +194,7 @@ def fetch_guardian():
         print(f"[warn] Guardian fetch failed: {e}")
         return []
     results = data.get("response", {}).get("results", [])
+    log(f"[debug] Guardian: results={len(results)}")
     items = []
     for it in results:
         items.append({
@@ -181,12 +213,34 @@ def fetch_reddit_hot():
     headers = {"User-Agent": "Mozilla/5.0 (news-bot; +https://example.com)"}
     for sub in REDDIT_SUBREDDITS:
         url = f"https://www.reddit.com/r/{sub}/hot.json"
+        children = []
         try:
             r = requests.get(url, params={"limit": 50}, headers=headers, timeout=20)
+            log(f"[debug] Reddit JSON r/{sub}: status={r.status_code}")
             r.raise_for_status()
             children = (r.json().get("data") or {}).get("children") or []
         except requests.RequestException as e:
             print(f"[warn] Reddit fetch failed for r/{sub}: {e}")
+        if not children:
+            rss_url = f"https://www.reddit.com/r/{sub}/hot/.rss"
+            d = feedparser.parse(rss_url, request_headers=headers)
+            log(f"[debug] Reddit RSS r/{sub}: entries={len(d.entries)}")
+            for e in d.entries[:50]:
+                link = e.get("link")
+                if not link:
+                    continue
+                items.append({
+                    "source": f"Reddit_r_{sub}",
+                    "kind": "reddit",
+                    "subreddit": sub,
+                    "title": (e.get("title") or "").strip(),
+                    "url": link.strip(),
+                    "published_ts": parse_published(e),
+                    "summary": "",
+                    "score": 0,
+                    "comments": 0,
+                    "popularity": 0,
+                })
             continue
         for child in children:
             data = child.get("data") or {}
@@ -237,6 +291,36 @@ def pick_first(candidates, used_urls):
     return None
 
 
+def pick_news_diverse(candidates, selected, selected_urls, limit):
+    topic_counts = {}
+    for it in selected:
+        topic = it.get("topic")
+        if topic:
+            topic_counts[topic] = topic_counts.get(topic, 0) + 1
+
+    for it in candidates:
+        if len(selected) >= limit:
+            break
+        if it["url"] in selected_urls:
+            continue
+        topic = it.get("topic")
+        if topic and topic_counts.get(topic, 0) == 0:
+            selected.append(it)
+            selected_urls.add(it["url"])
+            topic_counts[topic] = 1
+
+    for it in candidates:
+        if len(selected) >= limit:
+            break
+        if it["url"] in selected_urls:
+            continue
+        topic = it.get("topic")
+        selected.append(it)
+        selected_urls.add(it["url"])
+        if topic:
+            topic_counts[topic] = topic_counts.get(topic, 0) + 1
+
+
 def format_message(top5):
     lines = []
     utc_plus_8 = timezone(timedelta(hours=8))
@@ -280,6 +364,7 @@ def main():
         title_norm = norm_text(it["title"])
         it["title_norm"] = title_norm
         it["topic_hits"] = topic_hits_in_title(it["title"])
+        it["topic"], it["topic_hits_primary"] = topic_label(it["title"])
         if it["topic_hits"] <= 0:
             continue
         it["lux_hit"] = lux_immigration_hit(it["title"])
@@ -314,22 +399,22 @@ def main():
 
     remaining_news_primary = [x for x in news_primary if x["url"] not in selected_news_urls]
     remaining_news_primary.sort(key=lambda x: (x["topic_hits"], x["published_ts"]), reverse=True)
-    for it in remaining_news_primary:
-        if len(selected_news) >= OTHER_NEWS_COUNT:
-            break
-        pick = pick_first([it], selected_news_urls)
-        if pick:
-            selected_news.append(pick)
+    pick_news_diverse(remaining_news_primary, selected_news, selected_news_urls, OTHER_NEWS_COUNT)
 
     if len(selected_news) < OTHER_NEWS_COUNT:
         remaining_news_fallback = [x for x in news_all_kw if x["url"] not in selected_news_urls]
         remaining_news_fallback.sort(key=lambda x: (x["topic_hits"], x["published_ts"]), reverse=True)
-        for it in remaining_news_fallback:
-            if len(selected_news) >= OTHER_NEWS_COUNT:
-                break
-            pick = pick_first([it], selected_news_urls)
-            if pick:
-                selected_news.append(pick)
+        pick_news_diverse(remaining_news_fallback, selected_news, selected_news_urls, OTHER_NEWS_COUNT)
+    if DEBUG:
+        def _topic_counts(items):
+            counts = {}
+            for x in items:
+                t = x.get("topic")
+                counts[t] = counts.get(t, 0) + 1
+            return counts
+        log(f"[debug] news_all_kw={len(news_all_kw)} topic_counts={_topic_counts(news_all_kw)}")
+        log(f"[debug] news_primary={len(news_primary)} topic_counts={_topic_counts(news_primary)}")
+        log(f"[debug] selected_news={len(selected_news)} topic_counts={_topic_counts(selected_news)}")
 
     selected_reddit = []
     selected_reddit_urls = set()
@@ -338,6 +423,11 @@ def main():
     lux_posts_fallback_1 = [x for x in reddit_all if x.get("subreddit") == lux_sub and x["in_window"]]
     lux_posts_fallback_2 = [x for x in reddit_all if x.get("subreddit") == lux_sub and not x["is_seen"]]
     lux_posts_fallback_3 = [x for x in reddit_all if x.get("subreddit") == lux_sub]
+    log(
+        "[debug] reddit lux pools sizes: "
+        f"primary={len(lux_posts_primary)} fallback1={len(lux_posts_fallback_1)} "
+        f"fallback2={len(lux_posts_fallback_2)} fallback3={len(lux_posts_fallback_3)}"
+    )
     for pool in [lux_posts_primary, lux_posts_fallback_1, lux_posts_fallback_2, lux_posts_fallback_3]:
         pool.sort(key=lambda x: (x["popularity"], x["published_ts"]), reverse=True)
         pick = pick_first(pool, selected_reddit_urls)
@@ -354,6 +444,11 @@ def main():
     non_lux_fallback_1 = [x for x in reddit_all if x.get("subreddit") != lux_sub and x["in_window"]]
     non_lux_fallback_2 = [x for x in reddit_all if x.get("subreddit") != lux_sub and not x["is_seen"]]
     non_lux_fallback_3 = [x for x in reddit_all if x.get("subreddit") != lux_sub]
+    log(
+        "[debug] reddit non-lux pools sizes: "
+        f"primary={len(non_lux_primary)} fallback1={len(non_lux_fallback_1)} "
+        f"fallback2={len(non_lux_fallback_2)} fallback3={len(non_lux_fallback_3)}"
+    )
     pools = [non_lux_primary, non_lux_fallback_1, non_lux_fallback_2, non_lux_fallback_3]
     for pool in pools:
         pool.sort(key=lambda x: (x["popularity"], x["published_ts"]), reverse=True)
@@ -377,8 +472,10 @@ def main():
     if second_pick:
         selected_reddit_urls.add(second_pick["url"])
         selected_reddit.append(second_pick)
+    log(f"[debug] selected_reddit={len(selected_reddit)}")
 
     selected = selected_reddit[:FIXED_REDDIT_COUNT] + selected_news[:OTHER_NEWS_COUNT]
+    log(f"[debug] selected_total={len(selected)} kinds={[x.get('kind') for x in selected]}")
     if not selected:
         tg_send("No important new items were found this round (or all were already sent).")
         return
