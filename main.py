@@ -154,9 +154,13 @@ def fetch_guardian():
         "page-size": 50,
         "order-by": "newest",
     }
-    r = requests.get(url, params=params, timeout=20)
-    r.raise_for_status()
-    data = r.json()
+    try:
+        r = requests.get(url, params=params, timeout=20)
+        r.raise_for_status()
+        data = r.json()
+    except requests.RequestException as e:
+        print(f"[warn] Guardian fetch failed: {e}")
+        return []
     results = data.get("response", {}).get("results", [])
     items = []
     for it in results:
@@ -176,9 +180,13 @@ def fetch_reddit_hot():
     headers = {"User-Agent": "Mozilla/5.0 (news-bot; +https://example.com)"}
     for sub in REDDIT_SUBREDDITS:
         url = f"https://www.reddit.com/r/{sub}/hot.json"
-        r = requests.get(url, params={"limit": 50}, headers=headers, timeout=20)
-        r.raise_for_status()
-        children = (r.json().get("data") or {}).get("children") or []
+        try:
+            r = requests.get(url, params={"limit": 50}, headers=headers, timeout=20)
+            r.raise_for_status()
+            children = (r.json().get("data") or {}).get("children") or []
+        except requests.RequestException as e:
+            print(f"[warn] Reddit fetch failed for r/{sub}: {e}")
+            continue
         for child in children:
             data = child.get("data") or {}
             permalink = data.get("permalink") or ""
