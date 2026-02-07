@@ -241,7 +241,7 @@ def format_message(top5):
     lines = []
     utc_plus_8 = timezone(timedelta(hours=8))
     local_time = datetime.now(utc_plus_8).strftime("%H:%M")
-    lines.append(f"news feed for Laura at {local_time}\\n")
+    lines.append(f"news feed for Laura at {local_time}\n")
     for i, it in enumerate(top5, 1):
         if it.get("kind") == "reddit":
             lines.append(
