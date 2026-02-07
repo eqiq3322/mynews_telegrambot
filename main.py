@@ -2,7 +2,7 @@
 import re
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 import feedparser
@@ -18,40 +18,41 @@ RSS_SOURCES = [
     ("DW", "https://rss.dw.com/rdf/rss-en-all"),
     ("France24", "https://www.france24.com/en/rss"),
     ("LeMonde_EN_Science", "https://www.lemonde.fr/en/science/rss_full.xml"),
-    ("Reddit_r_europe", "https://www.reddit.com/r/europe/new/.rss"),
+]
+
+REDDIT_SUBREDDITS = [
+    "worldnews",
+    "science",
+    "europe",
+    "Luxembourg",
+    "EuropeanUnion",
+    "dataisbeautiful",
 ]
 
 TOPIC_KEYWORDS = {
-    "EU_big": ["eu", "european commission", "parliament", "sanction", "nato", "ukraine", "russia"],
-    "Lux_immigration": ["luxembourg", "residence", "visa", "blue card", "schengen", "immigration", "asylum"],
+    "EU_big": ["eu", "european commission", "ukraine", "russia"],
+    "Lux_immigration": ["luxembourg", "residence", "visa", "blue card", "schengen", "immigration"],
     "Quant_fin": ["quant", "trading", "crypto", "volatility", "ecb", "rates", "inflation", "market"],
     "Research_engineering": ["research", "paper", "university", "aerospace", "wind", "grid", "nuclear", "semiconductor", "ai"],
     "Space": ["nasa", "esa", "launch", "satellite", "space", "astronomy"],
     "Taiwan_life": ["taiwan", "lgbtq", "gender", "childcare", "fertility", "marriage", "cost of living", "saving"],
 }
 
-POLICY_KEYWORDS = [
-    "policy", "law", "bill", "regulation", "directive", "ban", "permit", "residence", "visa", "immigration"
-]
-
-SOURCE_WEIGHT = {
-    "Guardian": 1.2,
-    "Euronews": 1.15,
-    "DW": 1.1,
-    "France24": 1.05,
-    "LeMonde": 1.1,
-    "Reddit": 0.95,
-}
-
 DB_PATH = "seen.sqlite"
-LOOKBACK_HOURS = 48
+LOOKBACK_HOURS = 6
 MAX_MESSAGE_LEN = 3900
+TOTAL_PUSH_COUNT = 5
+FIXED_REDDIT_COUNT = 2
+OTHER_NEWS_COUNT = TOTAL_PUSH_COUNT - FIXED_REDDIT_COUNT
 
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("CREATE TABLE IF NOT EXISTS seen (url TEXT PRIMARY KEY, ts INTEGER)")
     conn.execute("CREATE TABLE IF NOT EXISTS seen_title (title TEXT PRIMARY KEY, ts INTEGER)")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS subreddit_daily (day TEXT, subreddit TEXT, cnt INTEGER, PRIMARY KEY(day, subreddit))"
+    )
     conn.commit()
     return conn
 
@@ -81,30 +82,22 @@ def strip_html(s: str) -> str:
     return re.sub(r"<.*?>", "", s or "").strip()
 
 
-def score_item(source_name: str, title: str, summary: str, published_ts: int) -> float:
-    text = norm_text(title + " " + summary)
-
-    topic_hits = 0
+def topic_hits_in_title(title: str) -> int:
+    text = norm_text(title)
+    hits = 0
     for kws in TOPIC_KEYWORDS.values():
         for kw in kws:
             if kw in text:
-                topic_hits += 1
+                hits += 1
+    return hits
 
-    policy_hits = 0
-    for kw in POLICY_KEYWORDS:
+
+def lux_immigration_hit(title: str) -> bool:
+    text = norm_text(title)
+    for kw in TOPIC_KEYWORDS["Lux_immigration"]:
         if kw in text:
-            policy_hits += 1
-
-    age_hours = max(0.0, (time.time() - published_ts) / 3600.0)
-    recency = max(0.0, 1.0 - age_hours / 24.0)
-
-    w = 1.0
-    for k, v in SOURCE_WEIGHT.items():
-        if k.lower() in source_name.lower():
-            w = v
-            break
-
-    return (topic_hits * 1.0 + policy_hits * 0.5 + recency * 2.0) * w
+            return True
+    return False
 
 
 def extract_summary(entry) -> str:
@@ -132,6 +125,7 @@ def fetch_rss():
                 continue
             items.append({
                 "source": name,
+                "kind": "news",
                 "title": (e.get("title") or "").strip(),
                 "url": link.strip(),
                 "published_ts": parse_published(e),
@@ -168,6 +162,7 @@ def fetch_guardian():
     for it in results:
         items.append({
             "source": "Guardian",
+            "kind": "news",
             "title": (it.get("webTitle") or "").strip(),
             "url": (it.get("webUrl") or "").strip(),
             "published_ts": parse_guardian_time(it.get("webPublicationDate")),
@@ -176,12 +171,68 @@ def fetch_guardian():
     return items
 
 
+def fetch_reddit_hot():
+    items = []
+    headers = {"User-Agent": "Mozilla/5.0 (news-bot; +https://example.com)"}
+    for sub in REDDIT_SUBREDDITS:
+        url = f"https://www.reddit.com/r/{sub}/hot.json"
+        r = requests.get(url, params={"limit": 50}, headers=headers, timeout=20)
+        r.raise_for_status()
+        children = (r.json().get("data") or {}).get("children") or []
+        for child in children:
+            data = child.get("data") or {}
+            permalink = data.get("permalink") or ""
+            if not permalink:
+                continue
+            score = int(data.get("score") or 0)
+            comments = int(data.get("num_comments") or 0)
+            items.append({
+                "source": f"Reddit_r_{sub}",
+                "kind": "reddit",
+                "subreddit": sub,
+                "title": (data.get("title") or "").strip(),
+                "url": f"https://www.reddit.com{permalink}",
+                "published_ts": int(data.get("created_utc") or time.time()),
+                "summary": "",
+                "score": score,
+                "comments": comments,
+                "popularity": score + comments,
+            })
+    return items
+
+
+def utc8_day_key() -> str:
+    utc_plus_8 = timezone(timedelta(hours=8))
+    return datetime.now(utc_plus_8).strftime("%Y-%m-%d")
+
+
+def get_used_subreddits_today(conn, day_key: str):
+    cur = conn.execute("SELECT subreddit FROM subreddit_daily WHERE day=?", (day_key,))
+    return {r[0] for r in cur.fetchall()}
+
+
+def mark_subreddit_used(conn, day_key: str, subreddit: str):
+    conn.execute(
+        "INSERT INTO subreddit_daily(day, subreddit, cnt) VALUES(?, ?, 1) "
+        "ON CONFLICT(day, subreddit) DO UPDATE SET cnt = cnt + 1",
+        (day_key, subreddit),
+    )
+    conn.commit()
+
+
 def format_message(top5):
     lines = []
-    local_time = datetime.now().strftime("%I:%M %p")
+    utc_plus_8 = timezone(timedelta(hours=8))
+    local_time = datetime.now(utc_plus_8).strftime("%H:%M")
     lines.append(f"news feed for Laura at {local_time}\\n")
     for i, it in enumerate(top5, 1):
-        lines.append(f"{i}) [{it['source']}] {it['title']}")
+        if it.get("kind") == "reddit":
+            lines.append(
+                f"{i}) [Reddit r/{it['subreddit']}] {it['title']}"
+            )
+            lines.append(f"   熱度：{it['score']} 讚 + {it['comments']} 留言 = {it['popularity']}")
+        else:
+            lines.append(f"{i}) [{it['source']}] {it['title']}")
         if it["summary"]:
             lines.append(f"   摘要：{it['summary']}")
         lines.append(f"   連結：{it['url']}\n")
@@ -199,34 +250,84 @@ def tg_send(text: str):
 def main():
     conn = init_db()
 
-    items = []
-    items.extend(fetch_rss())
-    items.extend(fetch_guardian())
+    news_items = []
+    news_items.extend(fetch_rss())
+    news_items.extend(fetch_guardian())
+    reddit_items = fetch_reddit_hot()
 
     cutoff = time.time() - LOOKBACK_HOURS * 3600
-    fresh = []
-    for it in items:
+    fresh_news = []
+    for it in news_items:
         if it["published_ts"] < cutoff:
             continue
         title_norm = norm_text(it["title"])
         if already_seen(conn, it["url"], title_norm):
             continue
         it["title_norm"] = title_norm
-        fresh.append(it)
+        it["topic_hits"] = topic_hits_in_title(it["title"])
+        if it["topic_hits"] <= 0:
+            continue
+        it["lux_hit"] = lux_immigration_hit(it["title"])
+        fresh_news.append(it)
 
-    for it in fresh:
-        it["score"] = score_item(it["source"], it["title"], it["summary"], it["published_ts"])
-    fresh.sort(key=lambda x: x["score"], reverse=True)
+    fresh_reddit = []
+    for it in reddit_items:
+        if it["published_ts"] < cutoff:
+            continue
+        title_norm = norm_text(it["title"])
+        if already_seen(conn, it["url"], title_norm):
+            continue
+        it["title_norm"] = title_norm
+        fresh_reddit.append(it)
 
-    top5 = fresh[:5]
-    if not top5:
+    selected_news = []
+    lux_news = [x for x in fresh_news if x["lux_hit"]]
+    lux_news.sort(key=lambda x: (x["topic_hits"], x["published_ts"]), reverse=True)
+    if lux_news:
+        selected_news.append(lux_news[0])
+
+    selected_urls = {x["url"] for x in selected_news}
+    remaining_news = [x for x in fresh_news if x["url"] not in selected_urls]
+    remaining_news.sort(key=lambda x: (x["topic_hits"], x["published_ts"]), reverse=True)
+    selected_news.extend(remaining_news[: max(0, OTHER_NEWS_COUNT - len(selected_news))])
+
+    selected_reddit = []
+    lux_sub = "Luxembourg"
+    lux_posts = [x for x in fresh_reddit if x.get("subreddit") == lux_sub]
+    lux_posts.sort(key=lambda x: (x["popularity"], x["published_ts"]), reverse=True)
+    if lux_posts:
+        selected_reddit.append(lux_posts[0])
+
+    non_lux_posts = [x for x in fresh_reddit if x.get("subreddit") != lux_sub]
+    non_lux_posts.sort(key=lambda x: (x["popularity"], x["published_ts"]), reverse=True)
+
+    day_key = utc8_day_key()
+    used_today = get_used_subreddits_today(conn, day_key)
+    planned_today = {x["subreddit"] for x in selected_reddit}
+
+    second_pick = None
+    if non_lux_posts:
+        if len(used_today.union(planned_today)) < 3:
+            for cand in non_lux_posts:
+                if cand["subreddit"] not in used_today.union(planned_today):
+                    second_pick = cand
+                    break
+        if second_pick is None:
+            second_pick = non_lux_posts[0]
+    if second_pick:
+        selected_reddit.append(second_pick)
+
+    selected = selected_reddit[:FIXED_REDDIT_COUNT] + selected_news[:OTHER_NEWS_COUNT]
+    if not selected:
         tg_send("🛰️ 這一輪沒有抓到新的重要消息（或都已推播過）。")
         return
 
-    for it in top5:
+    for it in selected:
         mark_seen(conn, it["url"], it["title_norm"])
+        if it.get("kind") == "reddit":
+            mark_subreddit_used(conn, day_key, it["subreddit"])
 
-    msg = format_message(top5)
+    msg = format_message(selected)
     tg_send(msg)
 
 
